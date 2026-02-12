@@ -1,0 +1,23 @@
+# VenomX Agent - Python Dependencies
+
+# Core dependencies
+requests>=2.31.0  # HTTP client for LLM APIs
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.0
+
+# Code quality
+black>=23.7.0
+flake8>=6.1.0
+mypy>=1.5.0
+
+# Optional: LLM clients (choose based on deployment)
+# openai>=1.3.0        # For OpenAI API
+# anthropic>=0.5.0     # For Claude API
+# ollama-python>=0.1.0 # For local Ollama
+
+# Utilities
+python-dotenv>=1.0.0  # Environment variables
+pydantic>=2.0.0       # Data validation
