@@ -82,34 +82,38 @@ class VenomXAgent:
     6. Repeat or respond to user
     """
 
-    SYSTEM_PROMPT = """You are VenomX, an AI-powered penetration testing assistant.
+    SYSTEM_PROMPT = """You are VenomX, a penetration testing agent.
 
-You help security professionals conduct authorized penetration tests in isolated lab environments.
-
-CRITICAL RULES:
-1. Only scan/attack systems in the designated network range
-2. Always respect IP exclusion lists
-3. Request human approval before executing restricted tools (hydra, sqlmap, metasploit)
-4. Provide clear explanations for your decisions
-5. Suggest next steps based on findings
+Your job is to execute pentesting tasks using the tools available to you.
 
 WORKFLOW:
-1. Understand the user's goal
-2. Plan your approach (reconnaissance → enumeration → vulnerability analysis → exploitation)
-3. Use tools methodically and analyze results
-4. Provide clear reports of findings
-5. Suggest remediation strategies
+1. Parse the user's objective
+2. Plan your approach: reconnaissance > enumeration > vulnerability analysis > exploitation
+3. Call the appropriate tool for each step
+4. Analyze tool output, extract key findings (open ports, services, versions, CVEs)
+5. Decide the next action based on results
+6. When the objective is met, summarize findings with severity ratings and remediation steps
 
 AVAILABLE TOOLS:
-- nmap: Network scanning, port enumeration, service detection
+- nmap: Network scanning, port enumeration, service/version detection, OS fingerprinting
 - nikto: Web server vulnerability scanning
-- gobuster: Directory/file brute-forcing
-- hydra: Authentication brute-forcing (REQUIRES APPROVAL)
-- sqlmap: SQL injection testing (REQUIRES APPROVAL)
-- searchsploit: Search exploit database
-- metasploit: Exploit framework (REQUIRES APPROVAL)
+- gobuster: Directory/file brute-forcing on web servers
+- hydra: Authentication brute-forcing (SSH, FTP, HTTP, RDP)
+- sqlmap: SQL injection detection and exploitation
+- searchsploit: Local Exploit-DB search for known exploits
+- metasploit: Exploit framework for validating vulnerabilities
 
-Remember: This is for authorized testing in a controlled environment only."""
+TOOL CALLING RULES:
+- Call ONE tool at a time
+- Always specify the target IP and relevant parameters
+- After receiving tool output, reason about results before calling the next tool
+- If a tool fails, try alternative parameters or a different tool
+- Cross-reference discovered service versions with searchsploit
+
+OUTPUT FORMAT:
+- Be concise and direct
+- List findings as: [SEVERITY] description
+- When done, provide a summary with: findings, CVEs, recommended exploits, remediation"""
 
     def __init__(
         self,
@@ -299,30 +303,110 @@ Remember: This is for authorized testing in a controlled environment only."""
         self.function_handler.clear_history()
 
 
-# Example LLM client adapter (for Ollama)
-class OllamaClient:
-    """Simple Ollama client adapter"""
+# LLM client adapter for vLLM (OpenAI-compatible API)
+class VLLMClient:
+    """
+    vLLM client adapter
 
-    def __init__(self, model: str = "llama3.3:70b", base_url: str = "http://localhost:11434"):
+    vLLM serves an OpenAI-compatible API at /v1/chat/completions,
+    so we use the standard OpenAI request format.
+
+    vLLM advantages over Ollama:
+    - PagedAttention for efficient memory management
+    - Continuous batching for higher throughput
+    - Better performance for large models (70B+)
+    - Native support for tool/function calling
+    """
+
+    def __init__(
+        self,
+        model: str = "meta-llama/Llama-3.3-70B-Instruct",
+        base_url: str = "http://localhost:8000",
+        api_key: str = "EMPTY",  # vLLM doesn't require a real key by default
+    ):
         self.model = model
-        self.base_url = base_url
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
 
     def chat(self, messages: List[Dict[str, str]], tools: List[Dict], temperature: float = 0.7) -> Dict[str, Any]:
         """
-        Call Ollama chat API
+        Call vLLM OpenAI-compatible chat completions API
 
-        Note: This is a simplified implementation
-        Full implementation would use requests library and handle tool calling properly
+        Args:
+            messages: Conversation history
+            tools: Tool schemas for function calling
+            temperature: Sampling temperature
+
+        Returns:
+            Response in OpenAI format (choices[0].message)
         """
         import requests
+
+        # Convert tool schemas to OpenAI function format
+        openai_tools = self._format_tools_for_openai(tools)
 
         payload = {
             "model": self.model,
             "messages": messages,
-            "tools": tools,
             "temperature": temperature,
-            "stream": False
+            "max_tokens": 4096,
         }
 
-        response = requests.post(f"{self.base_url}/api/chat", json=payload)
-        return response.json()
+        # Only include tools if available
+        if openai_tools:
+            payload["tools"] = openai_tools
+            payload["tool_choice"] = "auto"
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+
+        response = requests.post(
+            f"{self.base_url}/v1/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=120,  # 2 minute timeout for large model inference
+        )
+        response.raise_for_status()
+
+        result = response.json()
+
+        # Extract the message from OpenAI format
+        message = result["choices"][0]["message"]
+
+        # If there's a tool call, reformat for our function calling handler
+        if message.get("tool_calls"):
+            tool_call = message["tool_calls"][0]
+            return {
+                "choices": result["choices"],
+                "function_call": {
+                    "name": tool_call["function"]["name"],
+                    "arguments": tool_call["function"]["arguments"],
+                },
+                "id": tool_call.get("id"),
+            }
+
+        return result
+
+    def _format_tools_for_openai(self, tools: List[Dict]) -> List[Dict]:
+        """
+        Convert our tool schemas to OpenAI function calling format
+
+        Our format:
+            {"name": "nmap", "description": "...", "parameters": {...}}
+
+        OpenAI format:
+            {"type": "function", "function": {"name": "nmap", "description": "...", "parameters": {...}}}
+        """
+        openai_tools = []
+        for tool in tools:
+            openai_tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool["parameters"],
+                }
+            })
+        return openai_tools

@@ -63,10 +63,10 @@ brew install nmap nikto gobuster hydra sqlmap exploitdb
 ### Basic Usage
 
 ```python
-from src.agent import VenomXAgent, OllamaClient, interactive_approval
+from src.agent import VenomXAgent, VLLMClient, interactive_approval
 
-# Initialize LLM client (Ollama with Llama 3.3 70B)
-llm = OllamaClient(model="llama3.3:70b")
+# Initialize LLM client (vLLM with Llama 3.3 70B)
+llm = VLLMClient(model="meta-llama/Llama-3.3-70B-Instruct")
 
 # Create agent with human approval for restricted tools
 agent = VenomXAgent(
@@ -315,7 +315,7 @@ pytest tests/unit/test_sanitizer.py -v
 
 ## 🐛 Known Issues
 
-- [ ] Ollama client is simplified - needs full implementation
+- [ ] vLLM client needs testing against live vLLM server
 - [ ] Missing tool wrappers for nikto, gobuster, hydra, sqlmap, metasploit
 - [ ] No integration tests yet
 - [ ] LLM response parsing needs testing with different model formats

@@ -1,13 +1,13 @@
 """Agent module - Core agent loop and function calling"""
 
-from .agent_loop import VenomXAgent, AgentState, AgentContext, OllamaClient
+from .agent_loop import VenomXAgent, AgentState, AgentContext, VLLMClient
 from .function_calling import FunctionCallHandler, FunctionCall, FunctionResponse, interactive_approval
 
 __all__ = [
     "VenomXAgent",
     "AgentState",
     "AgentContext",
-    "OllamaClient",
+    "VLLMClient",
     "FunctionCallHandler",
     "FunctionCall",
     "FunctionResponse",
