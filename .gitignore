@@ -29,12 +29,14 @@ env/
 # IDEs
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
 .DS_Store
 
 # Testing
+test_components.py
 .pytest_cache/
 .coverage
 htmlcov/

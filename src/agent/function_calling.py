@@ -6,10 +6,12 @@ Handles conversion between LLM function calls and tool executions
 from typing import Dict, Any, List, Optional, Callable
 import json
 from dataclasses import dataclass, asdict
+from pathlib import Path
 
 from ..schemas.tool_schemas import get_all_schemas, get_tool_schema, is_restricted, is_loud
 from ..tools import ToolFactory, ToolResult
 from ..parsers.output_parser import OutputParser
+from ..security.prompt_guard import PromptGuard, CanaryViolation, ScopeViolation
 
 
 @dataclass
@@ -44,18 +46,26 @@ class FunctionCallHandler:
     def __init__(
         self,
         approval_callback: Optional[Callable[[str, Dict[str, Any]], bool]] = None,
-        verbose: bool = False
+        verbose: bool = False,
+        prompt_guard: Optional[PromptGuard] = None,
     ):
         """
         Args:
             approval_callback: Function to get human approval for restricted tools
                               Should return True if approved, False otherwise
-            verbose: Enable verbose logging
+            verbose:           Enable verbose logging
+            prompt_guard:      PromptGuard instance for injection defense.
+                               If None, a default guard with no scope restrictions
+                               is created. Pass a configured guard from VenomXAgent
+                               to enforce scope and audit logging.
         """
         self.tool_factory = ToolFactory()
         self.output_parser = OutputParser()
         self.approval_callback = approval_callback
         self.verbose = verbose
+
+        # Layer 1-3 injection defense
+        self.prompt_guard = prompt_guard or PromptGuard()
 
         # Track execution history
         self.execution_history: List[FunctionResponse] = []
@@ -168,14 +178,36 @@ class FunctionCallHandler:
         if is_loud(tool_name) and self.verbose:
             print(f"[WARNING] Tool '{tool_name}' is loud and will generate significant network traffic")
 
+        # Layer 3: Scope validation - check target before execution
+        # Validates at decision time, not just at execution time
+        try:
+            self.prompt_guard.validate_scope(tool_name, arguments)
+        except ScopeViolation as e:
+            return FunctionResponse(
+                call_id=function_call.call_id,
+                name=tool_name,
+                result=f"[SCOPE VIOLATION] {str(e)}",
+                success=False
+            )
+
         # Execute tool
         try:
             result: ToolResult = tool.execute(**arguments)
 
-            # Parse output
+            # Layer 1: Sanitize raw output before it reaches the LLM
+            # Strips injection patterns, wraps in trust-boundary markers
+            sanitized = self.prompt_guard.sanitize_for_llm(result.output, tool_name)
+
+            if self.verbose and sanitized.was_modified:
+                print(
+                    f"[PromptGuard] Stripped {len(sanitized.patterns_stripped)} "
+                    f"injection pattern(s) from {tool_name} output: {sanitized.patterns_stripped}"
+                )
+
+            # Parse output using the sanitized content
             parsed = self.output_parser.parse(
                 tool_name=tool_name,
-                raw_output=result.output,
+                raw_output=sanitized.sanitized_content,  # sanitized, not raw
                 metadata=result.metadata
             )
 

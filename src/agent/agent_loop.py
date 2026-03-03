@@ -10,6 +10,11 @@ from enum import Enum
 import json
 
 from .function_calling import FunctionCallHandler, FunctionCall, FunctionResponse
+from .credential_store import CredentialStore
+from ..graph.finding_graph import FindingGraph
+from ..graph.attack_path import AttackPathFinder
+from ..security.prompt_guard import PromptGuard, CanaryViolation
+from ..utils.session import Session, new_session
 
 
 class AgentState(Enum):
@@ -119,20 +124,50 @@ OUTPUT FORMAT:
         self,
         llm_client: Any,  # LLM client (Ollama, OpenAI, Anthropic, etc.)
         approval_callback: Optional[Callable[[str, Dict[str, Any]], bool]] = None,
-        verbose: bool = True
+        verbose: bool = True,
+        session: Optional[Session] = None,
+        scope_cidrs: Optional[List[str]] = None,
     ):
         """
         Args:
-            llm_client: LLM client for making inference calls
+            llm_client:        LLM client for making inference calls
             approval_callback: Function for human-in-the-loop approval
-            verbose: Enable verbose logging
+            verbose:           Enable verbose logging
+            session:           Session object for persistence.
+                               If None, a new in-memory-only session is created.
+            scope_cidrs:       CIDR blocks declaring the allowed target scope.
+                               Passed to PromptGuard for Layer 3 validation.
         """
         self.llm_client = llm_client
+        self.verbose = verbose
+
+        # Session: single source of truth for all file paths
+        self.session = session or new_session()
+
+        # Security: PromptGuard with audit log and scope enforcement
+        self.prompt_guard = PromptGuard(
+            audit_log_path=self.session.audit_log_path,
+            scope_cidrs=scope_cidrs or [],
+            scope_ips=list(self.session.target_network.split(",")) if self.session.target_network else [],
+        )
+
+        # Stateful memory modules
+        self.credential_store = CredentialStore(
+            session_id=self.session.session_id,
+            persist_path=self.session.credentials_path,
+        )
+        self.graph = FindingGraph(
+            session_id=self.session.session_id,
+            wal_path=self.session.wal_path,
+            json_path=self.session.graph_json_path,
+        )
+        self.path_finder = AttackPathFinder(self.graph)
+
         self.function_handler = FunctionCallHandler(
             approval_callback=approval_callback,
-            verbose=verbose
+            verbose=verbose,
+            prompt_guard=self.prompt_guard,
         )
-        self.verbose = verbose
         self.context = AgentContext()
 
         # Initialize context with system prompt
@@ -166,9 +201,37 @@ OUTPUT FORMAT:
             if self.verbose:
                 print(f"\n[Agent] Iteration {self.context.current_iteration}/{self.context.max_iterations}")
 
+            # Inject stateful context into system message for this iteration:
+            #   - Graph summary (all discovered hosts, services, vulns)
+            #   - Attack path summary (complete and partial chains)
+            #   - Credential summary (all known creds, validated first)
+            self._inject_iteration_context()
+
             # Get LLM response
             try:
+                # Layer 2: Generate per-iteration canary AFTER tool output is
+                # collected, BEFORE the LLM call. The canary is injected into
+                # the system role only - never in tool output context.
+                current_system = self.context.messages[0].content
+                system_with_canary, canary = self.prompt_guard.inject_canary(
+                    current_system, self.context.current_iteration
+                )
+                # Temporarily override system message for this LLM call
+                self.context.messages[0].content = system_with_canary
+
                 llm_response = self._call_llm()
+
+                # Restore original system message (canary is per-iteration only)
+                self.context.messages[0].content = current_system
+
+                # Layer 2: Validate canary before doing anything with the response
+                # Halt-and-log on failure - never retry
+                response_text = self._extract_text_response(llm_response)
+                try:
+                    self.prompt_guard.validate_canary(response_text, canary)
+                except CanaryViolation as e:
+                    self.context.state = AgentState.ERROR
+                    return f"[SECURITY HALT] {str(e)}"
 
                 # Check if LLM wants to call a tool
                 function_call = self.function_handler.parse_llm_function_call(llm_response)
@@ -180,6 +243,10 @@ OUTPUT FORMAT:
                         print(f"[Agent] Calling tool: {function_call.name}")
 
                     response = self.function_handler.execute_function_call(function_call)
+
+                    # Feed results into the graph (replaces ephemeral ParsedOutput)
+                    if response.success and response.raw_result:
+                        self._ingest_tool_result(function_call.name, response.raw_result.metadata)
 
                     # Add tool result to context
                     tool_message = self.function_handler.format_function_response_for_llm(response)
@@ -194,17 +261,21 @@ OUTPUT FORMAT:
 
                 else:
                     # No function call - LLM is responding to user
-                    assistant_response = self._extract_text_response(llm_response)
+                    assistant_response = response_text
                     self.context.add_message("assistant", assistant_response)
 
                     # Check if task is complete
                     if self._is_task_complete(assistant_response):
                         self.context.state = AgentState.COMPLETE
+                        self._close_session()
                         return assistant_response
                     else:
-                        # LLM provided response but may need more interaction
                         return assistant_response
 
+            except CanaryViolation:
+                # Already handled above, but catch here as a safety net
+                self.context.state = AgentState.ERROR
+                return "[SECURITY HALT] Canary validation failed. See audit.log."
             except Exception as e:
                 self.context.state = AgentState.ERROR
                 error_msg = f"Error in agent loop: {str(e)}"
@@ -283,6 +354,89 @@ OUTPUT FORMAT:
 
         response_lower = response.lower()
         return any(indicator in response_lower for indicator in completion_indicators)
+
+    def _inject_iteration_context(self) -> None:
+        """
+        Inject graph summary, attack path summary, and credential summary into
+        a fresh context message at the start of each iteration.
+
+        This replaces the pattern of the LLM re-deriving correlations from raw
+        tool outputs scattered across the context window.
+        """
+        sections = []
+
+        graph_summary = self.graph.summary_for_llm()
+        if graph_summary:
+            sections.append(graph_summary)
+
+        path_summary = self.path_finder.summary_for_llm()
+        if path_summary:
+            sections.append(path_summary)
+
+        cred_summary = self.credential_store.summary_for_llm()
+        if cred_summary:
+            sections.append(cred_summary)
+
+        if sections:
+            combined = "\n\n".join(sections)
+            # Inject as a system-role message so the LLM treats it as
+            # authoritative structured state, not tool output
+            self.context.add_message(
+                role="system",
+                content=f"[AGENT STATE - Iteration {self.context.current_iteration}]\n{combined}",
+                metadata={"type": "state_injection"}
+            )
+
+    def _ingest_tool_result(self, tool_name: str, metadata: dict) -> None:
+        """
+        Route a successful tool result into the appropriate graph ingestion method.
+        This is the integration point that makes the graph stateful across iterations.
+
+        Args:
+            tool_name: Name of the tool that ran
+            metadata:  Parsed metadata from the tool's parse_output()
+        """
+        if not metadata:
+            return
+
+        try:
+            if tool_name == "nmap":
+                created = self.graph.add_nmap_result(metadata)
+                if self.verbose and created:
+                    print(f"[Graph] nmap: added {len(created)} node(s)")
+
+            elif tool_name == "searchsploit":
+                created = self.graph.add_searchsploit_result(metadata)
+                if self.verbose and created:
+                    print(f"[Graph] searchsploit: added {len(created)} node(s)")
+
+            elif tool_name == "hydra":
+                added = self.credential_store.add_from_hydra_output(metadata)
+                if self.verbose and added:
+                    print(f"[CredentialStore] hydra: added {added} credential(s)")
+
+            elif tool_name == "nikto":
+                findings = metadata.get("findings", [])
+                host = metadata.get("host", "")
+                port = int(metadata.get("port", 80))
+                if findings and host:
+                    created = self.graph.add_nikto_result(findings, host, port)
+                    if self.verbose and created:
+                        print(f"[Graph] nikto: added {len(created)} vulnerability node(s)")
+
+        except Exception as e:
+            if self.verbose:
+                print(f"[Graph] Failed to ingest {tool_name} result: {e}")
+
+    def _close_session(self) -> None:
+        """
+        Checkpoint the graph on session close.
+        graph.json is materialized here - guaranteeing Nick and Jordan's
+        consumers have a current snapshot at the end of every session.
+        """
+        self.graph.checkpoint()
+        if self.verbose:
+            print(f"[Session] Closed. Graph checkpoint written. Session: {self.session.summary()}")
 
     def get_findings(self) -> List[Dict[str, Any]]:
         """Get all findings from execution"""
