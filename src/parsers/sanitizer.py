@@ -3,10 +3,10 @@ Command Sanitization Module
 Security layer to prevent command injection and unauthorized operations
 """
 
-import re
 import ipaddress
-from typing import Tuple, List, Set
+import re
 from dataclasses import dataclass
+from typing import List, Set, Tuple
 
 
 @dataclass
@@ -172,7 +172,6 @@ class CommandSanitizer:
             if '/' in ip_str:
                 target_network = ipaddress.ip_network(ip_str, strict=False)
             else:
-                target_ip = ipaddress.ip_address(ip_str)
                 target_network = ipaddress.ip_network(f"{ip_str}/32", strict=False)
 
             # Check blacklist first (takes precedence)

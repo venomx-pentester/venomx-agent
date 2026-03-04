@@ -3,10 +3,8 @@ Output Parser Module
 Parses and structures tool outputs for LLM consumption
 """
 
-from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
-import re
-import json
+from typing import Any, Dict, List
 
 
 @dataclass

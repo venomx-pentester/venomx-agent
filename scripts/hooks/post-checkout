@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Post-checkout hook: install dev dependencies if pytest or ruff are missing.
+# Runs automatically after: git checkout, git switch, git clone (on some clients)
+
+PREV_HEAD=$1
+NEW_HEAD=$2
+BRANCH_SWITCH=$3  # 1 if switching branches, 0 if checking out a file
+
+# Only run on branch switches, not individual file checkouts
+[ "$BRANCH_SWITCH" = "1" ] || exit 0
+
+MISSING=()
+
+if ! python -m pytest --version &>/dev/null 2>&1; then
+    MISSING+=("pytest")
+fi
+
+if ! python -m ruff --version &>/dev/null 2>&1; then
+    MISSING+=("ruff")
+fi
+
+if [ ${#MISSING[@]} -gt 0 ]; then
+    echo "[post-checkout] Installing missing dev dependencies: ${MISSING[*]}"
+    pip install "${MISSING[@]}" -q
+    echo "[post-checkout] Done. Run 'make check' to verify everything works."
+fi

@@ -3,9 +3,9 @@ Searchsploit Tool Wrapper
 Search local Exploit-DB database for known exploits
 """
 
-from .base import BaseTool
-import re
 import json
+
+from .base import BaseTool
 
 
 class SearchsploitTool(BaseTool):

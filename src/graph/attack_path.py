@@ -22,17 +22,16 @@ under uncertainty rather than executing a scripted playbook.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from typing import Literal, Optional, TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, Optional
 
 if TYPE_CHECKING:
     from .finding_graph import (
+        ExploitNode,
         FindingGraph,
         NetworkNode,
         ServiceNode,
         VulnerabilityNode,
-        ExploitNode,
-        Node,
     )
 
 logger = logging.getLogger(__name__)
@@ -105,7 +104,6 @@ class AttackPath:
             return ""
 
         first = self.chain[0]
-        last = self.chain[-1]
 
         host = first.get("ip", first.get("host", "unknown"))
         chain_types = " -> ".join(n.get("node_type", "?").upper() for n in self.chain)

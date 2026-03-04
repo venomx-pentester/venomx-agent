@@ -3,18 +3,17 @@ VenomX Agent Loop
 Orchestrates LLM reasoning and tool execution for penetration testing
 """
 
-from typing import List, Dict, Any, Optional, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-import json
+from typing import Any, Callable, Dict, List, Optional
 
-from .function_calling import FunctionCallHandler, FunctionCall, FunctionResponse
-from .credential_store import CredentialStore
-from ..graph.finding_graph import FindingGraph
 from ..graph.attack_path import AttackPathFinder
-from ..security.prompt_guard import PromptGuard, CanaryViolation
+from ..graph.finding_graph import FindingGraph
+from ..security.prompt_guard import CanaryViolation, PromptGuard
 from ..utils.session import Session, new_session
+from .credential_store import CredentialStore
+from .function_calling import FunctionCallHandler
 
 
 class AgentState(Enum):
@@ -127,6 +126,7 @@ OUTPUT FORMAT:
         verbose: bool = True,
         session: Optional[Session] = None,
         scope_cidrs: Optional[List[str]] = None,
+        disable_canary: bool = False,
     ):
         """
         Args:
@@ -137,6 +137,9 @@ OUTPUT FORMAT:
                                If None, a new in-memory-only session is created.
             scope_cidrs:       CIDR blocks declaring the allowed target scope.
                                Passed to PromptGuard for Layer 3 validation.
+            disable_canary:    If True, skip canary injection and validation.
+                               Use only in dev/test with models that don't support
+                               canary echo (e.g. qwen2.5:3b). Default False.
         """
         self.llm_client = llm_client
         self.verbose = verbose
@@ -149,6 +152,7 @@ OUTPUT FORMAT:
             audit_log_path=self.session.audit_log_path,
             scope_cidrs=scope_cidrs or [],
             scope_ips=list(self.session.target_network.split(",")) if self.session.target_network else [],
+            disable_canary=disable_canary,
         )
 
         # Stateful memory modules

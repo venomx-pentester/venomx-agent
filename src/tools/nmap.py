@@ -3,9 +3,9 @@ Nmap Tool Wrapper
 Network scanning and service detection
 """
 
-from .base import BaseTool
 import re
-import json
+
+from .base import BaseTool
 
 
 class NmapTool(BaseTool):
@@ -185,10 +185,6 @@ class NmapTool(BaseTool):
             "open_ports": [],
             "raw_text": output
         }
-
-        # Extract IP addresses
-        ip_pattern = r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}'
-        ips = re.findall(ip_pattern, output)
 
         # Extract port information
         port_pattern = r'(\d+)/(tcp|udp)\s+open\s+(\S+)'

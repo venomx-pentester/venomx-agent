@@ -11,9 +11,8 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import uuid4
 from typing import Optional
-
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 

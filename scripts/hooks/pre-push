@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Pre-push hook: lint + unit tests must pass before push.
+# Install: make install-hooks  (or see Makefile for manual steps)
+
+set -euo pipefail
+
+echo "[pre-push] Running ruff lint..."
+if ! python -m ruff check src/; then
+    echo ""
+    echo "[pre-push] Lint failed. Fix errors before pushing."
+    exit 1
+fi
+
+echo "[pre-push] Running unit tests..."
+if ! python -m pytest tests/unit/ -q --tb=short; then
+    echo ""
+    echo "[pre-push] Tests failed. Fix failures before pushing."
+    exit 1
+fi
+
+echo "[pre-push] All checks passed."

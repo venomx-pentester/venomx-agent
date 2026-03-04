@@ -3,15 +3,14 @@ LLM Function Calling Module
 Handles conversion between LLM function calls and tool executions
 """
 
-from typing import Dict, Any, List, Optional, Callable
 import json
-from dataclasses import dataclass, asdict
-from pathlib import Path
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional
 
-from ..schemas.tool_schemas import get_all_schemas, get_tool_schema, is_restricted, is_loud
-from ..tools import ToolFactory, ToolResult
 from ..parsers.output_parser import OutputParser
-from ..security.prompt_guard import PromptGuard, CanaryViolation, ScopeViolation
+from ..schemas.tool_schemas import get_all_schemas, is_loud, is_restricted
+from ..security.prompt_guard import PromptGuard, ScopeViolation
+from ..tools import ToolFactory, ToolResult
 
 
 @dataclass

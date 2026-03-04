@@ -3,8 +3,7 @@ Tool Schemas for VenomX Agent
 Defines JSON schemas for LLM function calling with security tools
 """
 
-from typing import TypedDict, Literal, Optional
-from enum import Enum
+from typing import Optional, TypedDict
 
 
 class ToolSchema(TypedDict):

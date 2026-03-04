@@ -13,15 +13,14 @@ Three layers:
                                        before execution
 """
 
-import re
 import json
 import logging
-from uuid import uuid4
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
 from pathlib import Path
-
+from typing import Optional
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +95,7 @@ class PromptGuard:
         audit_log_path: Optional[Path] = None,
         scope_cidrs: Optional[list[str]] = None,
         scope_ips: Optional[list[str]] = None,
+        disable_canary: bool = False,
     ):
         """
         Args:
@@ -104,10 +104,15 @@ class PromptGuard:
             scope_cidrs:    Allowed CIDR blocks (e.g. ["192.168.1.0/24"]).
                             If None, scope validation is skipped.
             scope_ips:      Explicit allowed IPs in addition to CIDRs.
+            disable_canary: If True, canary injection and validation are skipped.
+                            Use only in dev/test environments with small models that
+                            do not reliably follow canary echo instructions.
+                            Production deployments must leave this False.
         """
         self.audit_log_path = audit_log_path
         self.scope_cidrs = scope_cidrs or []
         self.scope_ips = set(scope_ips or [])
+        self.disable_canary = disable_canary
 
         # Per-iteration state - replaced on each inject_canary() call
         self._current_canary: Optional[str] = None
@@ -195,6 +200,9 @@ class PromptGuard:
         Returns:
             (modified_system_message, canary_token)
         """
+        if self.disable_canary:
+            return system_message, ""
+
         canary_uuid = uuid4().hex
         canary_token = f"[CANARY: {canary_uuid}]"
 
@@ -224,6 +232,9 @@ class PromptGuard:
         Raises:
             CanaryViolation: If the canary is missing or malformed
         """
+        if self.disable_canary:
+            return
+
         if expected_canary not in llm_response_text:
             self._audit(
                 event="canary_violation",

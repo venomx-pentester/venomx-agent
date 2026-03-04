@@ -22,12 +22,11 @@ Persistence strategy: Write-Ahead Log (WAL)
 
 import json
 import logging
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Optional, Literal
 from pathlib import Path
+from typing import Optional
 from uuid import uuid4
-
 
 logger = logging.getLogger(__name__)
 
@@ -483,7 +482,6 @@ class FindingGraph:
         """
         nets = self.get_network_nodes()
         svcs = self.get_service_nodes()
-        vulns = self.get_vulnerability_nodes()
         exploits = self.get_exploit_nodes()
 
         if not nets and not svcs:
