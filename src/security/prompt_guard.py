@@ -209,14 +209,17 @@ class PromptGuard:
         self._current_canary = canary_token
         self._canary_iteration = iteration
 
+        # Prepend so the model sees the canary instruction FIRST before any other
+        # text. Appending to a long system message causes the model to deprioritize
+        # the instruction (it appears after 500+ tokens of tool schemas and state).
         canary_instruction = (
-            f"\n\n[SECURITY] Iteration {iteration} canary: {canary_token}\n"
-            "You MUST include this exact canary token at the start of any TEXT response "
-            "(i.e. when you are not calling a tool). Do not include the canary in tool "
-            "arguments. This token verifies response integrity and detects prompt injection."
+            f"[SECURITY] Iteration {iteration} canary: {canary_token}\n"
+            f"MANDATORY: If your response is TEXT (not a JSON tool call), it MUST "
+            f"start with exactly: {canary_token}\n"
+            "Do NOT put the canary inside tool call arguments.\n\n"
         )
 
-        return system_message + canary_instruction, canary_token
+        return canary_instruction + system_message, canary_token
 
     def validate_canary(self, llm_response_text: str, expected_canary: str) -> None:
         """
