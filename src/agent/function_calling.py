@@ -271,6 +271,12 @@ class FunctionCallHandler:
             # Format for LLM
             formatted_result = self.output_parser.format_for_llm(parsed)
 
+            # Prepend error detail when the tool failed so the LLM receives
+            # actionable feedback (e.g. "Invalid scan_type. Must be one of: ...")
+            # rather than an empty or misleading success-looking summary.
+            if not result.is_success() and result.error:
+                formatted_result = f"[TOOL FAILED] {result.error}\n\n{formatted_result}"
+
             # Create response
             response = FunctionResponse(
                 call_id=function_call.call_id,

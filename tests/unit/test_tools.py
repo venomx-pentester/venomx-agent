@@ -5,8 +5,8 @@ from src.tools import ToolFactory, ToolStatus
 
 def test_factory_lists_registered_tools():
     tools = ToolFactory.list_tools()
-    assert "nmap" in tools
-    assert "searchsploit" in tools
+    for expected in ["nmap", "nikto", "gobuster", "hydra", "sqlmap", "searchsploit", "metasploit"]:
+        assert expected in tools
 
 
 def test_get_nmap_tool():

@@ -98,20 +98,61 @@ WORKFLOW:
 5. Decide the next action based on results
 6. When the objective is met, summarize findings with severity ratings and remediation steps
 
-AVAILABLE TOOLS:
-- nmap: Network scanning, port enumeration, service/version detection, OS fingerprinting
-- nikto: Web server vulnerability scanning
-- gobuster: Directory/file brute-forcing on web servers
-- hydra: Authentication brute-forcing (SSH, FTP, HTTP, RDP)
-- sqlmap: SQL injection detection and exploitation
-- searchsploit: Local Exploit-DB search for known exploits
-- metasploit: Exploit framework for validating vulnerabilities
+AVAILABLE TOOLS (use ONLY the exact parameter values listed):
+
+nmap — host/port/service discovery
+  target (string, required): IP, hostname, or CIDR
+  scan_type (string, required): EXACTLY one of: ping_sweep | port_scan | service_scan | os_detection | aggressive | stealth
+  ports (string, optional): e.g. "22,80,443" or "1-1000"
+  timing (int 0-5, optional, default 3)
+
+nikto — web server vulnerability scan
+  target (string, required): URL or IP
+  port (int, optional, default 80)
+  ssl (bool, optional, default false)
+  tuning (string, optional): one of: all | interesting | misconfig | info_disclosure | injection | xss
+
+gobuster — web directory brute-force
+  target (string, required): base URL e.g. "http://192.168.1.50"
+  wordlist (string, optional): one of: common | medium | large | api | admin
+  extensions (list of strings, optional): e.g. ["php","html","txt"]
+  threads (int 1-50, optional, default 10)
+
+hydra — credential brute-force [requires approval]
+  target (string, required): IP or hostname
+  service (string, required): EXACTLY one of: ssh | ftp | http-get | http-post | rdp | mysql | postgres
+  username (string, optional): single username
+  username_list (string, optional): EXACTLY one of: common | top100 | default
+  password_list (string, optional): EXACTLY one of: common | rockyou-100 | default | weak
+  port (int, optional): override default port
+  threads (int 1-16, optional, default 4)
+  stop_on_success (bool, optional, default true)
+
+sqlmap — SQL injection [requires approval]
+  target (string, required): URL with parameter e.g. "http://target/page.php?id=1"
+  method (string, optional): GET | POST
+  data (string, optional): POST body
+  level (int 1-5, optional, default 1)
+  risk (int 1-3, optional, default 1)
+  enumerate (list, optional): items from: dbs | tables | columns | users | passwords | current-user
+
+searchsploit — search exploit database
+  query (string, required): software name and version e.g. "vsftpd 2.3.4"
+  strict (bool, optional, default false)
+  platform (string, optional): linux | windows | multiple | php | hardware
+
+metasploit — run exploit module [requires approval]
+  exploit (string, required): module path e.g. "exploit/unix/ftp/vsftpd_234_backdoor"
+  target (string, required): target IP
+  lhost (string, required): attacker IP for reverse shell
+  port (int, optional): target port
+  payload (string, optional): payload module path
+  lport (int, optional, default 4444)
 
 TOOL CALLING RULES:
 - Call ONE tool at a time
-- Always specify the target IP and relevant parameters
+- If a tool returns [TOOL FAILED], read the error and fix the parameters before retrying
 - After receiving tool output, reason about results before calling the next tool
-- If a tool fails, try alternative parameters or a different tool
 - Cross-reference discovered service versions with searchsploit
 
 TOOL CALL FORMAT:
@@ -612,8 +653,15 @@ class VLLMClient:
         # Extract the message from OpenAI format
         message = result["choices"][0]["message"]
 
-        # If there's a tool call, reformat for our function calling handler
-        if message.get("tool_calls"):
+        # If there's a native tool_call response AND we sent tools= to the API,
+        # reformat it for our function calling handler.
+        # Guard with use_tools_api: gpt-oss-20b outputs JSON in content and
+        # does NOT use tool_calls.  If we process tool_calls unconditionally,
+        # a spurious native response would set call_id on the FunctionCall,
+        # causing format_function_response_for_llm to return role:"tool", which
+        # vLLM then rejects on the next request with:
+        # "unexpected tokens remaining in message header: Some('to=tool')"
+        if self.use_tools_api and message.get("tool_calls"):
             tool_call = message["tool_calls"][0]
             return {
                 "choices": result["choices"],

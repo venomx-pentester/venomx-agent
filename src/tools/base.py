@@ -123,6 +123,18 @@ class BaseTool(ABC):
         timeout = timeout or self.default_timeout
 
         try:
+            # Validate parameters before building the command so the LLM
+            # receives a clear error message for invalid args (e.g. unknown
+            # scan_type) rather than silent fallback behaviour.
+            is_valid, error_msg = self.validate_params(**kwargs)
+            if not is_valid:
+                return ToolResult(
+                    tool_name=self.name,
+                    status=ToolStatus.FAILURE,
+                    output="",
+                    error=f"Invalid parameters: {error_msg}",
+                )
+
             # Build command
             raw_command = self.build_command(**kwargs)
 

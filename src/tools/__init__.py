@@ -6,15 +6,13 @@ Central access point for all security tools
 from typing import Optional
 
 from .base import BaseTool, ToolResult, ToolStatus
+from .gobuster import GobusterTool
+from .hydra import HydraTool
+from .metasploit import MetasploitTool
+from .nikto import NiktoTool
 from .nmap import NmapTool
 from .searchsploit import SearchsploitTool
-
-# TODO: Import additional tools as they're implemented
-# from .nikto import NiktoTool
-# from .gobuster import GobusterTool
-# from .hydra import HydraTool
-# from .sqlmap import SQLMapTool
-# from .metasploit import MetasploitTool
+from .sqlmap import SQLMapTool
 
 
 class ToolFactory:
@@ -25,13 +23,12 @@ class ToolFactory:
 
     _tools: dict[str, type[BaseTool]] = {
         "nmap": NmapTool,
+        "nikto": NiktoTool,
+        "gobuster": GobusterTool,
+        "hydra": HydraTool,
+        "sqlmap": SQLMapTool,
         "searchsploit": SearchsploitTool,
-        # TODO: Add more tools
-        # "nikto": NiktoTool,
-        # "gobuster": GobusterTool,
-        # "hydra": HydraTool,
-        # "sqlmap": SQLMapTool,
-        # "metasploit": MetasploitTool,
+        "metasploit": MetasploitTool,
     }
 
     @classmethod
@@ -74,5 +71,10 @@ __all__ = [
     "ToolStatus",
     "ToolFactory",
     "NmapTool",
+    "NiktoTool",
+    "GobusterTool",
+    "HydraTool",
+    "SQLMapTool",
     "SearchsploitTool",
+    "MetasploitTool",
 ]
