@@ -131,7 +131,13 @@ class FunctionCallHandler:
         # back to extracting the tool name from the "reasoning" field.
         elif "choices" in llm_response:
             message = (llm_response["choices"][0].get("message") or {})
-            content = (message.get("content") or "").strip()
+            # gpt-oss-20b sometimes puts output in "reasoning" when content is null
+            content = (message.get("content") or message.get("reasoning") or "").strip()
+            # Strip any non-JSON prefix (e.g. canary token echoed before tool JSON).
+            # The model may produce "[CANARY: ...]\n{...}" — find the first "{".
+            json_start = content.find("{")
+            if json_start > 0:
+                content = content[json_start:].rstrip()
             if content.startswith("{") and content.endswith("}"):
                 try:
                     parsed = json.loads(content)

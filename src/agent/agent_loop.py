@@ -309,8 +309,13 @@ OUTPUT FORMAT:
         Returns:
             LLM response (format depends on client)
         """
-        # Get conversation history
-        messages = self.context.get_conversation_history()
+        # Get conversation history with sliding window.
+        # The AGENT STATE section in messages[0] already provides a structured
+        # summary of all findings (graph + attack paths + credentials), so older
+        # raw tool result messages are redundant once the state is injected.
+        # Keeping only the last 4 tool results caps total input to ~600-700 tokens
+        # which safely fits in the model's 4096-token architectural limit.
+        messages = self._windowed_history(max_tool_messages=4)
 
         # Get tool schemas for function calling
         tools = self.function_handler.get_tool_schemas_for_llm()
@@ -325,6 +330,30 @@ OUTPUT FORMAT:
 
         return response
 
+    def _windowed_history(self, max_tool_messages: int = 4) -> List[Dict[str, str]]:
+        """
+        Return conversation history capped to the last max_tool_messages tool result
+        messages to prevent context growth from overflowing the model's token limit.
+
+        The graph state is already injected into messages[0] (the system prompt)
+        on every iteration, so older raw tool result messages are redundant and
+        only consume tokens.
+
+        Structure returned:
+            messages[0] - system prompt (with AGENT STATE injected)
+            messages[1] - original user request
+            messages[-max_tool_messages:] - most recent tool results
+        """
+        messages = self.context.get_conversation_history()
+        if len(messages) <= 2:
+            return messages
+        system_msg = messages[0]
+        user_msg = messages[1]
+        history = messages[2:]
+        if len(history) > max_tool_messages:
+            history = history[-max_tool_messages:]
+        return [system_msg, user_msg] + history
+
     def _extract_text_response(self, llm_response: Dict[str, Any]) -> str:
         """Extract text content from LLM response"""
         # Handle different LLM response formats
@@ -333,7 +362,12 @@ OUTPUT FORMAT:
 
         # OpenAI format
         if "choices" in llm_response:
-            content = (llm_response["choices"][0].get("message") or {}).get("content") or ""
+            message = (llm_response["choices"][0].get("message") or {})
+            content = message.get("content") or ""
+            # gpt-oss-20b sometimes outputs to "reasoning" instead of "content"
+            # (content=null). Fall back so canary validation and tool parsing work.
+            if not content:
+                content = message.get("reasoning") or ""
             return content
 
         # Claude format
@@ -500,11 +534,13 @@ class VLLMClient:
                                       # via the Llama-3 tool-use chat template, which inflates the
                                       # system message and triggers tokenizer errors when the
                                       # AGENT STATE section is also injected.
+        verbose: bool = False,
     ):
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.use_tools_api = use_tools_api
+        self.verbose = verbose
 
     def chat(self, messages: List[Dict[str, str]], tools: List[Dict], temperature: float = 0.7) -> Dict[str, Any]:
         """
@@ -551,10 +587,11 @@ class VLLMClient:
             "Authorization": f"Bearer {self.api_key}",
         }
 
-        roles = [m.get("role") for m in messages]
-        print(f"[vLLM] Sending {len(messages)} messages, roles={roles}, "
-              f"tools={len(openai_tools)}, "
-              f"sys_len={len(messages[0].get('content','') if messages else '')}")
+        if self.verbose:
+            roles = [m.get("role") for m in messages]
+            print(f"[vLLM] Sending {len(messages)} messages, roles={roles}, "
+                  f"tools={len(openai_tools)}, "
+                  f"sys_len={len(messages[0].get('content','') if messages else '')}")
 
         response = requests.post(
             f"{self.base_url}/v1/chat/completions",
