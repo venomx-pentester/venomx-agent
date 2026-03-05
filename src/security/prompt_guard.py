@@ -211,9 +211,9 @@ class PromptGuard:
 
         canary_instruction = (
             f"\n\n[SECURITY] Iteration {iteration} canary: {canary_token}\n"
-            "You MUST begin any tool call decision with this exact canary token "
-            "as your first output token. Do not include the canary in tool arguments. "
-            "This token verifies response integrity."
+            "You MUST include this exact canary token at the start of any TEXT response "
+            "(i.e. when you are not calling a tool). Do not include the canary in tool "
+            "arguments. This token verifies response integrity and detects prompt injection."
         )
 
         return system_message + canary_instruction, canary_token

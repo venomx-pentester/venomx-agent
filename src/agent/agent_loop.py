@@ -228,17 +228,21 @@ OUTPUT FORMAT:
                 # Restore original system message (canary is per-iteration only)
                 self.context.messages[0].content = current_system
 
-                # Layer 2: Validate canary before doing anything with the response
-                # Halt-and-log on failure - never retry
                 response_text = self._extract_text_response(llm_response)
-                try:
-                    self.prompt_guard.validate_canary(response_text, canary)
-                except CanaryViolation as e:
-                    self.context.state = AgentState.ERROR
-                    return f"[SECURITY HALT] {str(e)}"
 
-                # Check if LLM wants to call a tool
+                # Check if LLM wants to call a tool (before canary validation,
+                # because tool call responses carry no text to embed a canary in)
                 function_call = self.function_handler.parse_llm_function_call(llm_response)
+
+                # Layer 2: Validate canary on TEXT responses only.
+                # Tool call responses are structured JSON - the model has no place
+                # to echo a canary token. Scope validation (Layer 3) covers tool calls.
+                if not function_call:
+                    try:
+                        self.prompt_guard.validate_canary(response_text, canary)
+                    except CanaryViolation as e:
+                        self.context.state = AgentState.ERROR
+                        return f"[SECURITY HALT] {str(e)}"
 
                 if function_call:
                     # Execute tool
