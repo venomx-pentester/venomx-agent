@@ -280,10 +280,18 @@ class OutputParser:
                 output_lines.append(f"  {i}. [{sev.upper()}] {desc}")
             output_lines.append("")
 
-        # Recommendations
+        # Recommendations (deduplicated, capped at 5 to control token usage)
         if parsed.recommendations:
+            seen = set()
+            unique_recs = []
+            for rec in parsed.recommendations:
+                if rec not in seen:
+                    seen.add(rec)
+                    unique_recs.append(rec)
+                    if len(unique_recs) == 5:
+                        break
             output_lines.append("Recommended Next Steps:")
-            for i, rec in enumerate(parsed.recommendations, 1):
+            for i, rec in enumerate(unique_recs, 1):
                 output_lines.append(f"  {i}. {rec}")
             output_lines.append("")
 

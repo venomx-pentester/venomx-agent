@@ -564,14 +564,13 @@ class VLLMClient:
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
-            # Cap at 2048: the model's actual architectural limit is 4096 tokens
-            # (max_position_embeddings), regardless of what the vLLM server reports
-            # as max_model_len.  Once prompt_tokens + max_tokens > 4096, vLLM
-            # overflows the KV cache and raises a misleading tokenizer error.
-            # 2048 leaves ample room for a growing conversation (up to ~10 iterations
-            # of tool results ≈ 1000-1500 prompt tokens) while fitting tool-call JSON
-            # and final summaries comfortably.
-            "max_tokens": 2048,
+            # Cap at 1024: the model's architectural limit is 4096 tokens total.
+            # Tool call JSON is ~50-100 tokens; final summaries are ~200 tokens.
+            # 1024 max_tokens leaves 3072 tokens for the prompt, which comfortably
+            # fits the system message + canary + AGENT STATE + 4 tool results.
+            # Previously 2048 caused overflow at iteration 3 when nmap output was
+            # large (many open ports → many recommendation lines in formatted output).
+            "max_tokens": 1024,
         }
 
         # Only include tools if the model supports native tool_calls.
