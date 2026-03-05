@@ -4,6 +4,7 @@ Handles conversion between LLM function calls and tool executions
 """
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -123,6 +124,57 @@ class FunctionCallHandler:
                 name=llm_response["name"],
                 arguments=llm_response["arguments"]
             )
+
+        # Content-based format: model outputs JSON in content field without using tool_calls.
+        # Used by models that don't support native function calling (e.g. gpt-oss-20b via vLLM).
+        # The model may output just the arguments without a "name" key; in that case we fall
+        # back to extracting the tool name from the "reasoning" field.
+        elif "choices" in llm_response:
+            message = (llm_response["choices"][0].get("message") or {})
+            content = (message.get("content") or "").strip()
+            if content.startswith("{") and content.endswith("}"):
+                try:
+                    parsed = json.loads(content)
+                    if isinstance(parsed, dict):
+                        tool_name = parsed.get("name")
+
+                        # Fallback 1: extract name from reasoning field ("functions.nmap")
+                        if not tool_name:
+                            reasoning = message.get("reasoning") or ""
+                            m = re.search(r'functions\.(\w+)', reasoning)
+                            if m:
+                                tool_name = m.group(1)
+
+                        # Fallback 2: schema-based parameter overlap matching.
+                        # Count how many keys from the JSON match each tool's schema.
+                        # Accept only if there is a single tool with the highest score.
+                        if not tool_name:
+                            from ..schemas.tool_schemas import get_all_schemas
+                            content_keys = set(parsed.keys())
+                            scores: dict = {}
+                            for schema in get_all_schemas():
+                                schema_keys = set(
+                                    schema["parameters"].get("properties", {}).keys()
+                                )
+                                scores[schema["name"]] = len(content_keys & schema_keys)
+                            max_score = max(scores.values()) if scores else 0
+                            if max_score > 0:
+                                winners = [n for n, s in scores.items() if s == max_score]
+                                if len(winners) == 1:
+                                    tool_name = winners[0]
+
+                        if tool_name:
+                            # If the content has a nested "arguments" key, use it;
+                            # otherwise treat the whole dict (minus "name") as the args
+                            if "arguments" in parsed:
+                                arguments = parsed["arguments"]
+                            else:
+                                arguments = {k: v for k, v in parsed.items() if k != "name"}
+                            if isinstance(arguments, str):
+                                arguments = json.loads(arguments)
+                            return FunctionCall(name=tool_name, arguments=arguments)
+                except (json.JSONDecodeError, KeyError):
+                    pass
 
         return None
 
@@ -246,11 +298,19 @@ class FunctionCallHandler:
         Returns:
             Dictionary in LLM-expected format
         """
+        if response.call_id:
+            # Native function calling: use OpenAI "tool" role
+            return {
+                "role": "tool",
+                "name": response.name,
+                "content": response.result,
+                "tool_call_id": response.call_id,
+            }
+        # Content-based tool call (no call_id): vLLM rejects "tool"/"function" roles
+        # when the model didn't use native tool_calls. Send as "user" message instead.
         return {
-            "role": "tool" if response.call_id else "function",
-            "name": response.name,
-            "content": response.result,
-            "tool_call_id": response.call_id
+            "role": "user",
+            "content": f"[Tool result: {response.name}]\n{response.result}",
         }
 
     def clear_history(self):

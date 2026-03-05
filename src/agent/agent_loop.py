@@ -114,6 +114,11 @@ TOOL CALLING RULES:
 - If a tool fails, try alternative parameters or a different tool
 - Cross-reference discovered service versions with searchsploit
 
+TOOL CALL FORMAT:
+To call a tool, your entire response must be ONLY this JSON — no other text:
+{"name": "<tool_name>", "arguments": {<parameters>}}
+Example: {"name": "nmap", "arguments": {"target": "10.0.0.1", "scan_type": "port_scan"}}
+
 OUTPUT FORMAT:
 - Be concise and direct
 - List findings as: [SEVERITY] description
@@ -328,7 +333,8 @@ OUTPUT FORMAT:
 
         # OpenAI format
         if "choices" in llm_response:
-            return llm_response["choices"][0]["message"]["content"]
+            content = (llm_response["choices"][0].get("message") or {}).get("content") or ""
+            return content
 
         # Claude format
         if "content" in llm_response:
@@ -533,6 +539,9 @@ class VLLMClient:
         response.raise_for_status()
 
         result = response.json()
+
+        if "choices" not in result:
+            raise RuntimeError(f"vLLM API error: {result}")
 
         # Extract the message from OpenAI format
         message = result["choices"][0]["message"]
