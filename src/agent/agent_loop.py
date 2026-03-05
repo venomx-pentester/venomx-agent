@@ -43,7 +43,7 @@ class AgentContext:
     """
     messages: List[AgentMessage] = field(default_factory=list)
     state: AgentState = AgentState.IDLE
-    max_iterations: int = 10  # Prevent infinite loops
+    max_iterations: int = 20  # Prevent infinite loops
     current_iteration: int = 0
     target_network: Optional[str] = None
     excluded_ips: List[str] = field(default_factory=list)
@@ -86,84 +86,36 @@ class VenomXAgent:
     6. Repeat or respond to user
     """
 
-    SYSTEM_PROMPT = """You are VenomX, a penetration testing agent.
+    SYSTEM_PROMPT = """You are VenomX, an autonomous penetration testing agent.
+Execute the given objective by calling tools in sequence. Do NOT describe what you plan to do — call the tool.
 
-Your job is to execute pentesting tasks using the tools available to you.
+WORKFLOW: reconnaissance → enumeration → vuln analysis → exploitation → summarize
 
-WORKFLOW:
-1. Parse the user's objective
-2. Plan your approach: reconnaissance > enumeration > vulnerability analysis > exploitation
-3. Call the appropriate tool for each step
-4. Analyze tool output, extract key findings (open ports, services, versions, CVEs)
-5. Decide the next action based on results
-6. When the objective is met, summarize findings with severity ratings and remediation steps
+TOOLS (use EXACT enum values — wrong values are rejected):
+nmap: target*(IP/CIDR), scan_type*(ping_sweep|port_scan|service_scan|os_detection|aggressive|stealth), ports, timing(0-5)
+nikto: target*(URL/IP), port(80), ssl(false), tuning(all|interesting|misconfig|info_disclosure|injection|xss)
+gobuster: target*(URL), wordlist(common|medium|large|api|admin), extensions(["php","html"]), threads(1-50)
+hydra[APPROVAL]: target*, service*(ssh|ftp|http-get|http-post|rdp|mysql|postgres), username, username_list(common|top100|default), password_list(common|rockyou-100|default|weak), port, threads(1-16)
+sqlmap[APPROVAL]: target*(URL?param), method(GET|POST), data, level(1-5), risk(1-3), enumerate([dbs,tables,columns,users,passwords,current-user])
+searchsploit: query*(e.g. "OpenSSH 7.4"), strict(false), platform(linux|windows|multiple|php|hardware)
+metasploit[APPROVAL]: exploit*(module path), target*(IP), lhost*(attacker IP), port, payload, lport(4444)
+(* = required)
 
-AVAILABLE TOOLS (use ONLY the exact parameter values listed):
+RULES:
+- One tool call per response
+- HTTP/HTTPS port found → run nikto then gobuster
+- SSH/FTP/RDP found → run hydra
+- Service version found → run searchsploit
+- If [TOOL FAILED]: fix the parameter and retry
+- Only write a text summary when ALL relevant tools have been called
 
-nmap — host/port/service discovery
-  target (string, required): IP, hostname, or CIDR
-  scan_type (string, required): EXACTLY one of: ping_sweep | port_scan | service_scan | os_detection | aggressive | stealth
-  ports (string, optional): e.g. "22,80,443" or "1-1000"
-  timing (int 0-5, optional, default 3)
+TOOL CALL FORMAT — your entire response must be ONLY this JSON:
+{"name": "<tool>", "arguments": {<params>}}
 
-nikto — web server vulnerability scan
-  target (string, required): URL or IP
-  port (int, optional, default 80)
-  ssl (bool, optional, default false)
-  tuning (string, optional): one of: all | interesting | misconfig | info_disclosure | injection | xss
-
-gobuster — web directory brute-force
-  target (string, required): base URL e.g. "http://192.168.1.50"
-  wordlist (string, optional): one of: common | medium | large | api | admin
-  extensions (list of strings, optional): e.g. ["php","html","txt"]
-  threads (int 1-50, optional, default 10)
-
-hydra — credential brute-force [requires approval]
-  target (string, required): IP or hostname
-  service (string, required): EXACTLY one of: ssh | ftp | http-get | http-post | rdp | mysql | postgres
-  username (string, optional): single username
-  username_list (string, optional): EXACTLY one of: common | top100 | default
-  password_list (string, optional): EXACTLY one of: common | rockyou-100 | default | weak
-  port (int, optional): override default port
-  threads (int 1-16, optional, default 4)
-  stop_on_success (bool, optional, default true)
-
-sqlmap — SQL injection [requires approval]
-  target (string, required): URL with parameter e.g. "http://target/page.php?id=1"
-  method (string, optional): GET | POST
-  data (string, optional): POST body
-  level (int 1-5, optional, default 1)
-  risk (int 1-3, optional, default 1)
-  enumerate (list, optional): items from: dbs | tables | columns | users | passwords | current-user
-
-searchsploit — search exploit database
-  query (string, required): software name and version e.g. "vsftpd 2.3.4"
-  strict (bool, optional, default false)
-  platform (string, optional): linux | windows | multiple | php | hardware
-
-metasploit — run exploit module [requires approval]
-  exploit (string, required): module path e.g. "exploit/unix/ftp/vsftpd_234_backdoor"
-  target (string, required): target IP
-  lhost (string, required): attacker IP for reverse shell
-  port (int, optional): target port
-  payload (string, optional): payload module path
-  lport (int, optional, default 4444)
-
-TOOL CALLING RULES:
-- Call ONE tool at a time
-- If a tool returns [TOOL FAILED], read the error and fix the parameters before retrying
-- After receiving tool output, reason about results before calling the next tool
-- Cross-reference discovered service versions with searchsploit
-
-TOOL CALL FORMAT:
-To call a tool, your entire response must be ONLY this JSON — no other text:
-{"name": "<tool_name>", "arguments": {<parameters>}}
-Example: {"name": "nmap", "arguments": {"target": "10.0.0.1", "scan_type": "port_scan"}}
-
-OUTPUT FORMAT:
-- Be concise and direct
-- List findings as: [SEVERITY] description
-- When done, provide a summary with: findings, CVEs, recommended exploits, remediation"""
+FINAL SUMMARY FORMAT (max 150 words):
+Findings: <severities + services>
+Exploits: <CVEs/searchsploit hits or "none">
+Recommended next steps: <1-3 actions>"""
 
     def __init__(
         self,
@@ -314,17 +266,22 @@ OUTPUT FORMAT:
                     continue
 
                 else:
-                    # No function call - LLM is responding to user
+                    # No function call - LLM produced a text response.
                     assistant_response = response_text
                     self.context.add_message("assistant", assistant_response)
 
-                    # Check if task is complete
+                    # Only exit when the model signals it is truly done.
+                    # If the response is intermediate planning text ("I found X,
+                    # next I'll run Y"), add it to context and keep looping so
+                    # the model can act on its own plan. Returning unconditionally
+                    # here caused the agent to halt after the first tool call
+                    # even when the model had more investigation to do.
                     if self._is_task_complete(assistant_response):
                         self.context.state = AgentState.COMPLETE
                         self._close_session()
                         return assistant_response
-                    else:
-                        return assistant_response
+                    # Not a final summary — continue the loop
+                    continue
 
             except CanaryViolation:
                 # Already handled above, but catch here as a safety net
@@ -438,7 +395,13 @@ OUTPUT FORMAT:
             "findings summary",
             "recommendations:",
             "no further action",
-            "have completed"
+            "have completed",
+            # Matches the OUTPUT FORMAT prompt: "Recommended next steps:" section
+            # and the model's markdown variant "next steps" heading, which only
+            # appear in a final summary — not in intermediate planning text.
+            "recommended next steps:",
+            "next steps\n",
+            "**next steps**",
         ]
 
         response_lower = response.lower()
