@@ -393,13 +393,15 @@ OUTPUT FORMAT:
 
         if sections:
             combined = "\n\n".join(sections)
-            # Inject as a system-role message so the LLM treats it as
-            # authoritative structured state, not tool output
-            self.context.add_message(
-                role="system",
-                content=f"[AGENT STATE - Iteration {self.context.current_iteration}]\n{combined}",
-                metadata={"type": "state_injection"}
-            )
+            state_section = f"\n\n[AGENT STATE - Iteration {self.context.current_iteration}]\n{combined}"
+            # Update messages[0] (the system prompt) in place instead of
+            # appending a new "system" message.  Llama-3's chat template only
+            # allows a system message at position 0; injecting system messages
+            # mid-conversation causes a tokenizer error in vLLM
+            # ("Unexpected token 13 while expecting start token 200006").
+            # Rebuilding from SYSTEM_PROMPT also overwrites any previous state
+            # injection, so state never accumulates across iterations.
+            self.context.messages[0].content = self.SYSTEM_PROMPT + state_section
 
     def _ingest_tool_result(self, tool_name: str, metadata: dict) -> None:
         """
@@ -491,10 +493,18 @@ class VLLMClient:
         model: str = "meta-llama/Llama-3.3-70B-Instruct",
         base_url: str = "http://localhost:8000",
         api_key: str = "EMPTY",  # vLLM doesn't require a real key by default
+        use_tools_api: bool = False,  # Set True only for models with native tool_calls support.
+                                      # gpt-oss-20b outputs tool args as JSON in content and
+                                      # does NOT use tool_calls, so keep False.  Sending tools
+                                      # causes vLLM to embed all schemas into the system message
+                                      # via the Llama-3 tool-use chat template, which inflates the
+                                      # system message and triggers tokenizer errors when the
+                                      # AGENT STATE section is also injected.
     ):
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.use_tools_api = use_tools_api
 
     def chat(self, messages: List[Dict[str, str]], tools: List[Dict], temperature: float = 0.7) -> Dict[str, Any]:
         """
@@ -502,7 +512,7 @@ class VLLMClient:
 
         Args:
             messages: Conversation history
-            tools: Tool schemas for function calling
+            tools: Tool schemas for function calling (only used when use_tools_api=True)
             temperature: Sampling temperature
 
         Returns:
@@ -510,25 +520,41 @@ class VLLMClient:
         """
         import requests
 
-        # Convert tool schemas to OpenAI function format
-        openai_tools = self._format_tools_for_openai(tools)
-
         payload = {
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": 4096,
+            # Cap at 2048: the model's actual architectural limit is 4096 tokens
+            # (max_position_embeddings), regardless of what the vLLM server reports
+            # as max_model_len.  Once prompt_tokens + max_tokens > 4096, vLLM
+            # overflows the KV cache and raises a misleading tokenizer error.
+            # 2048 leaves ample room for a growing conversation (up to ~10 iterations
+            # of tool results ≈ 1000-1500 prompt tokens) while fitting tool-call JSON
+            # and final summaries comfortably.
+            "max_tokens": 2048,
         }
 
-        # Only include tools if available
-        if openai_tools:
-            payload["tools"] = openai_tools
-            payload["tool_choice"] = "auto"
+        # Only include tools if the model supports native tool_calls.
+        # gpt-oss-20b ignores tool_calls and outputs JSON in content instead;
+        # sending tools triggers vLLM's Llama-3 tool template which embeds all
+        # schemas into the system message and causes tokenizer errors.
+        if self.use_tools_api:
+            openai_tools = self._format_tools_for_openai(tools)
+            if openai_tools:
+                payload["tools"] = openai_tools
+                payload["tool_choice"] = "auto"
+        else:
+            openai_tools = []
 
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         }
+
+        roles = [m.get("role") for m in messages]
+        print(f"[vLLM] Sending {len(messages)} messages, roles={roles}, "
+              f"tools={len(openai_tools)}, "
+              f"sys_len={len(messages[0].get('content','') if messages else '')}")
 
         response = requests.post(
             f"{self.base_url}/v1/chat/completions",
@@ -536,7 +562,10 @@ class VLLMClient:
             headers=headers,
             timeout=120,  # 2 minute timeout for large model inference
         )
-        response.raise_for_status()
+
+        if not response.ok:
+            print(f"[vLLM] Error body: {response.text[:500]}")
+            response.raise_for_status()
 
         result = response.json()
 
